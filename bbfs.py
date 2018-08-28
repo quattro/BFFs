@@ -157,6 +157,7 @@ def simulate(args, LD):
         betas[cidx] = np.random.normal(0, np.sqrt(h2g_expr))
         weights.append(betas)
 
+
     W = np.array(weights).T
     if args.infer_weights:
         Vinv = np.linalg.inv(LD + np.eye(nsnp) * 0.1)
@@ -190,7 +191,7 @@ def simulate(args, LD):
 
     zscores = mvn.rvs(mean=lambda_snp, cov=V_model)
 
-    return (zscores, W, LD, V, causals, lambda_snp, prior_prob, prior_chisq)
+    return (zscores, W_infer, LD, V_noise, causals, lambda_snp, prior_prob, prior_chisq)
 
 
 def main(args):
