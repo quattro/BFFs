@@ -158,13 +158,24 @@ def simulate(args, LD):
         weights.append(betas)
 
     W = np.array(weights).T
+    if args.infer_weights:
+        Vinv = np.linalg.inv(LD + np.eye(nsnp) * 0.1)
+        W_infer = np.zeros((args.P, args.M))
+        for idx in range(args.M):
+            W_infer.T[idx] = mvn.rvs(mean=W.T[idx], cov=Vinv / args.NEQTL)
+    else:
+        W_infer = W
 
-    C = multi_dot([W.T, LD, W])
+    C = multi_dot([W_infer.T, LD, W])
     S = np.diag(1 / np.sqrt(np.diag(C)))
-    V = multi_dot([S, C, S])
+    V_true = multi_dot([S, C, S])
+
+    C = multi_dot([W_infer.T, LD, W_infer])
+    S = np.diag(1 / np.sqrt(np.diag(C)))
+    V_noise = multi_dot([S, C, S])
 
     if args.fixed_direct:
-        inter = multi_dot([S, W.T, LD, np.ones(nsnp)])
+        inter = multi_dot([S, W_infer.T, LD, np.ones(nsnp)])
         alpha_snp = np.random.normal(0, np.sqrt(prior_var))
         lambda_snp = np.sqrt(ngwas) * inter * alpha_snp
     else:
@@ -175,7 +186,7 @@ def simulate(args, LD):
     D = np.zeros((ngenes, ngenes))
     D[causals, causals] = prior_chisq
 
-    V_model = multi_dot([V, D, V]) + V
+    V_model = multi_dot([V_true, D, V_true]) + V_noise
 
     zscores = mvn.rvs(mean=lambda_snp, cov=V_model)
 
@@ -195,6 +206,7 @@ def main(args):
     argp.add_argument("--fixed-direct", action="store_true", default=False, help="Simulate direct effects under scalar model")
     argp.add_argument("--random-direct", action="store_true", default=False, help="Simulate direct effects under shared eQTL")
     argp.add_argument("--add-diagonal", action="store_true", default=False, help="Add noise to diagonal of covariance matrix for loglike")
+    argp.add_argument("--infer-weights", action="store_true", default=False, help="If set, returns inferred eQTL weights, rather than true")
     argp.add_argument("-v", "--verbose", action="store_true", default=False)
     argp.add_argument("-o", "--output", type=ap.FileType("w"), default=sys.stdout)
 
