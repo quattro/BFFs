@@ -62,7 +62,7 @@ def weighted_bf(zs, idx_set, V, prior_chisq, prb, use_log=True):
         cur_scaled_Zp = (cur_Zp.T.dot(cur_U)) ** 2
     else:
         cur_U, cur_EIG = 1, cur_V
-        cur_scaled_Zp = cur_V ** 2
+        cur_scaled_Zp = cur_Zp ** 2
 
     # log BF + log prior
     cur_log_BF = 0.5 * -np.sum(np.log(1 + cur_chi2 * cur_EIG)) + \
@@ -194,6 +194,7 @@ def main(args):
     argp.add_argument("-b", "--beta", type=int, default=10, help="Maximum LD eigenvalue")
     argp.add_argument("--fixed-direct", action="store_true", default=False, help="Simulate direct effects under scalar model")
     argp.add_argument("--random-direct", action="store_true", default=False, help="Simulate direct effects under shared eQTL")
+    argp.add_argument("--add-diagonal", action="store_true", default=False, help="Add noise to diagonal of covariance matrix for loglike")
     argp.add_argument("-v", "--verbose", action="store_true", default=False)
     argp.add_argument("-o", "--output", type=ap.FileType("w"), default=sys.stdout)
 
@@ -206,6 +207,8 @@ def main(args):
 
     zscores, W, LD, V, causals, lambda_snp, prior_prob, prior_chisq = simulate(args, LD)
 
+    Vll = V + np.eye(args.M) * 0.1 if args.add_diagonal else V
+
     k = 2
     rm = range(args.M)
     PIP_bf = np.zeros(args.M)
@@ -213,11 +216,11 @@ def main(args):
     null_bf = args.M * np.log(1 - prior_prob)
 
     marginal_bf = null_bf
-    marginal_like = weighted_like(zscores, [], V, prior_chisq, prior_prob, use_log=True)
+    marginal_like = weighted_like(zscores, [], Vll, prior_chisq, prior_prob, use_log=True)
 
     for subset in chain.from_iterable(combinations(rm, n) for n in range(1, k + 1)):
         local_bf = weighted_bf(zscores, subset, V, prior_chisq, prior_prob, use_log=True)
-        local_like = weighted_like(zscores, subset, V, prior_chisq, prior_prob, use_log=True)
+        local_like = weighted_like(zscores, subset, Vll, prior_chisq, prior_prob, use_log=True)
 
         marginal_bf = np.logaddexp(marginal_bf, local_bf)
         marginal_like = np.logaddexp(marginal_like, local_like)
@@ -233,10 +236,13 @@ def main(args):
     PIP_bf = np.exp(PIP_bf - marginal_bf)
     PIP_like = np.exp(PIP_like - marginal_like)
 
+    causal_genes = np.zeros(args.M).astype(bool)
+    causal_genes[causals] = True
     df = pd.DataFrame({"Zscores":zscores,
+                       "Causal": causal_genes,
                        "PIP.BF": PIP_bf,
                        "PIP.LL": PIP_like})
-    df = df[["Zscores", "PIP.BF", "PIP.LL"]]
+    df = df[["Zscores", "Causal", "PIP.BF", "PIP.LL"]]
 
     df.to_csv(args.output, index=False, sep="\t", float_format="%.6f")
 
