@@ -40,7 +40,7 @@ def get_resid(zs, SWLD, V):
     return (resid, alpha, inter_se, inter_z)
 
 
-def weighted_bf(zs, idx_set, V, prior_chisq, prb, use_log=True):
+def weighted_bf(zs, idx_set, SWLD, V, prior_chisq, prb, use_log=True, compute_resid=False):
     """
     Compute the prior-weighted BayesFactor
     """
@@ -75,7 +75,7 @@ def weighted_bf(zs, idx_set, V, prior_chisq, prb, use_log=True):
         return np.exp(cur_log_BF)
 
 
-def weighted_like(zs, idx_set, V, prior_chisq, prb, use_log=True):
+def weighted_like(zs, idx_set, SWLD, V, prior_chisq, prb, use_log=True, compute_resid=False):
     """
     Compute the prior-weighted Likelihood of the z-score
     """
@@ -88,10 +88,12 @@ def weighted_like(zs, idx_set, V, prior_chisq, prb, use_log=True):
     for idx in idx_set:
         cur_D[idx, idx] = cur_chi2
 
-    mu = np.zeros(m)
-
     # total variance in Z-scores is due to variance in data plus the prior variance on causal effect sizes
     V = V + multi_dot([V, cur_D, V])
+    mu = np.zeros(m)
+
+    if compute_resid:
+        zs, _, _, _ = get_resid(zs, SWLD, V)
 
     # evidence of the Z-scores under this causal configuration
     local = mvn.logpdf(zs, mean=mu, cov=V) + nc * np.log(prb) + (m - nc) * np.log(1 - prb)
@@ -177,7 +179,7 @@ def simulate(args, LD):
 
     if args.fixed_direct:
         inter = multi_dot([S, W_infer.T, LD, np.ones(nsnp)])
-        alpha_snp = np.random.normal(0, np.sqrt(prior_var))
+        alpha_snp = np.random.normal(0, np.sqrt(args.prior_var))
         lambda_snp = np.sqrt(ngwas) * inter * alpha_snp
     else:
         lambda_snp = np.zeros(ngenes)
@@ -213,6 +215,9 @@ def main(args):
 
     args = argp.parse_args(args)
 
+    #NAMES = ["BF", "LL", "BF.N.RESID", "LL.N.RESID", "BF.F.RESID", "LL.F.RESID"]
+    NAMES = ["BF", "LL", "BF.N.RESID", "LL.N.RESID", "LL.F.RESID"]
+
     prior_prob = 1 / float(args.M)
     prior_chisq = args.NGWAS * args.prior_var
 
@@ -220,44 +225,82 @@ def main(args):
 
     zscores, W, LD, V, causals, lambda_snp, prior_prob, prior_chisq = simulate(args, LD)
 
-    Vll = V + np.eye(args.M) * 0.1 if args.add_diagonal else V
+
+    S = np.diag(1 / np.sqrt(np.diag(multi_dot([W.T, LD, W]))))
+    SWLD = multi_dot([S, W.T, LD])
+    zscores_resid, _, _, _ = get_resid(zscores, SWLD, V)
+
+    def weighted_bf_null_resid(zscores, subset, SWLD, V, prior_chisq, prior_prob):
+        return weighted_bf(zscores_resid, subset, SWLD, V, prior_chisq, prior_prob, use_log=True)
+
+    def weighted_bf_full_resid(zscores, subset, SWLD, V, prior_chisq, prior_prob):
+        return weighted_bf(zscores, subset, SWLD, V, prior_chisq, prior_prob, use_log=True, compute_resid=True)
+
+    def weighted_like_(zscores, subset, SWLD, V, prior_chisq, prior_prob):
+        Vll = V + np.eye(args.M) * 0.1 if args.add_diagonal else V
+        return weighted_like(zscores, subset, SWLD, Vll, prior_chisq, prior_prob, use_log=True)
+
+    def weighted_like_null_resid(zscores, subset, SWLD, V, prior_chisq, prior_prob):
+        Vll = V + np.eye(args.M) * 0.1 if args.add_diagonal else V
+        return weighted_like(zscores_resid, subset, SWLD, Vll, prior_chisq, prior_prob, use_log=True)
+
+    def weighted_like_full_resid(zscores, subset, SWLD, V, prior_chisq, prior_prob):
+        Vll = V + np.eye(args.M) * 0.1 if args.add_diagonal else V
+        return weighted_like(zscores, subset, SWLD, Vll, prior_chisq, prior_prob, use_log=True, compute_resid=True)
+
+    methods = dict()
+    methods["BF"] = weighted_bf
+    methods["BF.N.RESID"] = weighted_bf_null_resid
+    #methods["BF.F.RESID"] = weighted_bf_full_resid
+    methods["LL"] = weighted_like_
+    methods["LL.N.RESID"] = weighted_like_null_resid
+    methods["LL.F.RESID"] = weighted_like_full_resid
 
     k = 2
     rm = range(args.M)
-    PIP_bf = np.zeros(args.M)
-    PIP_like = np.zeros(args.M)
-    null_bf = args.M * np.log(1 - prior_prob)
 
-    marginal_bf = null_bf
-    marginal_like = weighted_like(zscores, [], Vll, prior_chisq, prior_prob, use_log=True)
+    pips = dict()
+    for name in NAMES:
+        pips[name] = np.zeros(args.M)
+
+    nulls = dict()
+    nulls["BF"] = args.M * np.log(1 - prior_prob)
+    nulls["BF.N.RESID"] = args.M * np.log(1 - prior_prob)
+    #nulls["BF.F.RESID"] = args.M * np.log(1 - prior_prob)
+
+    nulls["LL"] = weighted_like_(zscores, [], SWLD, V, prior_chisq, prior_prob)
+    nulls["LL.N.RESID"] = weighted_like_null_resid(zscores, [], SWLD, V, prior_chisq, prior_prob)
+    nulls["LL.F.RESID"] = nulls["LL.N.RESID"]
+
+    marginals = dict()
+    for name in NAMES:
+        marginals[name] = nulls[name]
 
     for subset in chain.from_iterable(combinations(rm, n) for n in range(1, k + 1)):
-        local_bf = weighted_bf(zscores, subset, V, prior_chisq, prior_prob, use_log=True)
-        local_like = weighted_like(zscores, subset, Vll, prior_chisq, prior_prob, use_log=True)
+        for name in NAMES:
+            func = methods[name]
+            local = func(zscores, subset, SWLD, V, prior_chisq, prior_prob)
+            marginals[name] = np.logaddexp(marginals[name], local)
 
-        marginal_bf = np.logaddexp(marginal_bf, local_bf)
-        marginal_like = np.logaddexp(marginal_like, local_like)
+            for idx in subset:
+                if np.isclose(pips[name][idx], 0):
+                    pips[name][idx] = local
+                else:
+                    pips[name][idx] = np.logaddexp(local, pips[name][idx])
 
-        for idx in subset:
-            if np.isclose(PIP_bf[idx], 0):
-                PIP_bf[idx] = local_bf
-                PIP_like[idx] = local_like
-            else:
-                PIP_bf[idx] = np.logaddexp(local_bf, PIP_bf[idx])
-                PIP_like[idx] = np.logaddexp(local_like, PIP_like[idx])
-
-    PIP_bf = np.exp(PIP_bf - marginal_bf)
-    PIP_like = np.exp(PIP_like - marginal_like)
+    for name in NAMES:
+        pips[name] = np.exp(pips[name] - marginals[name])
 
     causal_genes = np.zeros(args.M).astype(bool)
     causal_genes[causals] = True
-    df = pd.DataFrame({"Zscores":zscores,
-                       "Causal": causal_genes,
-                       "PIP.BF": PIP_bf,
-                       "PIP.LL": PIP_like})
-    df = df[["Zscores", "Causal", "PIP.BF", "PIP.LL"]]
 
-    df.to_csv(args.output, index=False, sep="\t", float_format="%.6f")
+    df_dict = dict([(name, pips[name]) for name in NAMES])
+    df_dict["Zscores"] = zscores
+    df_dict["Causal"] = causal_genes
+    df = pd.DataFrame(df_dict)
+    df = df[["Zscores", "Causal"] + NAMES]
+
+    df.to_csv(args.output, index=False, sep="\t", float_format="%.3e")
 
     return 0
 
